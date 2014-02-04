@@ -8,7 +8,9 @@ libraryDependencies ++= Seq(
   "org.webjars" %% "webjars-play" % "2.2.0",
   "org.webjars" % "bootstrap" % "2.3.1",
   "org.webjars" % "flot" % "0.8.0",
-  "com.typesafe.akka" %% "akka-testkit" % "2.2.1" % "test"
+  "com.typesafe.akka" %% "akka-testkit" % "2.2.1" % "test",
+  "org.mockito" % "mockito-core" % "1.9.5" % "test",
+  "org.scalatest" %% "scalatest" % "1.9.1" % "test"
 )
 
 play.Project.playScalaSettings
