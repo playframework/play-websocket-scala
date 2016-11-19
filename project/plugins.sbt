@@ -5,7 +5,7 @@ logLevel := Level.Warn
 resolvers += Resolver.typesafeRepo("releases")
 
 // Use the Play sbt plugin for Play projects
-addSbtPlugin("com.typesafe.play" % "sbt-plugin" % "2.5.9")
+addSbtPlugin("com.typesafe.play" % "sbt-plugin" % "2.5.10")
 
 addSbtPlugin("com.typesafe.sbt" % "sbt-less" % "1.1.0")
 
