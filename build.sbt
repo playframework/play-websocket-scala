@@ -1,13 +1,10 @@
-name := "play-websocket-scala"
+name := "play-websocket-scala-example"
 
 version := "1.0-SNAPSHOT"
 
 lazy val root = (project in file(".")).enablePlugins(PlayScala)
 
 scalaVersion := "2.12.1"
-
-// scalaz-bintray resolver needed for specs2 library
-resolvers += "scalaz-bintray" at "https://dl.bintray.com/scalaz/releases"
 
 libraryDependencies += guice
 libraryDependencies += ws
