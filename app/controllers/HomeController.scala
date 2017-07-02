@@ -31,6 +31,10 @@ class HomeController @Inject()(@Named("stocksActor") stocksActor: ActorRef,
   // Use a direct reference to SLF4J
   private val logger = org.slf4j.LoggerFactory.getLogger("controllers.HomeController")
 
+  // If you want to log on a flow, you have to use a logging adapter.
+  // http://doc.akka.io/docs/akka/2.4.4/scala/logging.html#SLF4J
+  implicit val logging = Logging(actorSystem.eventStream, logger.getName)
+
   // Home page that renders template
   def index = Action { implicit request: Request[AnyContent] =>
     Ok(views.html.index())
@@ -96,7 +100,7 @@ class HomeController @Inject()(@Named("stocksActor") stocksActor: ActorRef,
    */
   def wsFutureFlow(request: RequestHeader): Future[Flow[JsValue, JsValue, NotUsed]] = {
     // create an actor ref source and associated publisher for sink
-    val (webSocketOut: ActorRef, webSocketIn: Publisher[JsValue]) = createWebSocketConnections()
+    val (webSocketOut: SourceQueueWithComplete[JsValue], webSocketIn: Publisher[JsValue]) = createWebSocketConnections()
 
     // Create a user actor off the request id and attach it to the source
     val userActorFuture = createUserActor(request.id.toString, webSocketOut)
@@ -108,23 +112,11 @@ class HomeController @Inject()(@Named("stocksActor") stocksActor: ActorRef,
   }
 
   /**
-   * Creates a materialized flow for the websocket, exposing the source and sink.
-   *
-   * @return the materialized input and output of the flow.
+   * Create a websocket connection, using a queue for backpressure.
    */
-  def createWebSocketConnections(): (ActorRef, Publisher[JsValue]) = {
-
-    // Creates a source to be materialized as an actor reference.
-    val source: Source[JsValue, ActorRef] = {
-      // If you want to log on a flow, you have to use a logging adapter.
-      // http://doc.akka.io/docs/akka/2.4.4/scala/logging.html#SLF4J
-      val logging = Logging(actorSystem.eventStream, logger.getName)
-
-      // Creating a source can be done through various means, but here we want
-      // the source exposed as an actor so we can send it messages from other
-      // actors.
-      Source.actorRef[JsValue](10, OverflowStrategy.dropTail).log("actorRefSource")(logging)
-    }
+  def createWebSocketConnections(): (SourceQueueWithComplete[JsValue], Publisher[JsValue]) = {
+    // Creates a source to be materialized as a queue.
+    val source = Source.queue[JsValue](50, OverflowStrategy.backpressure)
 
     // Creates a sink to be materialized as a publisher.  Fanout is false as we only want
     // a single subscriber here.
@@ -177,7 +169,7 @@ class HomeController @Inject()(@Named("stocksActor") stocksActor: ActorRef,
    * @param webSocketOut the "write" side of the websocket, that the user actor sends JsValue to.
    * @return a user actor for this ws connection.
    */
-  def createUserActor(name: String, webSocketOut: ActorRef): Future[ActorRef] = {
+  def createUserActor(name: String, webSocketOut: SourceQueueWithComplete[JsValue]): Future[ActorRef] = {
     // Use guice assisted injection to instantiate and configure the child actor.
     val userActorFuture = {
       implicit val timeout = Timeout(100.millis)
