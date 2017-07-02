@@ -1,6 +1,7 @@
 package actors
 
 import akka.actor._
+import akka.stream.scaladsl.Source
 import akka.testkit.{TestActorRef, _}
 import com.typesafe.config.ConfigFactory
 import org.scalatest.MustMatchers
@@ -23,8 +24,9 @@ class UserActorSpec extends TestKitSpec with MustMatchers {
     "send a stock when receiving a StockUpdate message" in {
       val out = TestProbe()
       val stocksActor = TestProbe()
+      val sourceQueue = Source.queue[JsValue]
 
-      val userActorRef = TestActorRef[UserActor](Props(new UserActor(out.ref, stocksActor.ref, configuration)))
+      val userActorRef = TestActorRef[UserActor](Props(new UserActor(sourceQueue, stocksActor.ref, configuration)))
       val userActor = userActorRef.underlyingActor
 
       // send off the stock update...
