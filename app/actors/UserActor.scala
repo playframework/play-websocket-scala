@@ -4,25 +4,26 @@ import javax.inject._
 
 import akka.actor._
 import akka.event.LoggingReceive
+import akka.stream.scaladsl.SourceQueueWithComplete
 import com.google.inject.assistedinject.Assisted
 import play.api.Configuration
 import play.api.libs.concurrent.InjectedActorSupport
 import play.api.libs.json._
 
-class UserActor @Inject()(@Assisted out: ActorRef,
+class UserActor @Inject()(@Assisted out: SourceQueueWithComplete[JsValue],
                           @Named("stocksActor") stocksActor: ActorRef,
                           configuration: Configuration) extends Actor with ActorLogging {
 
-
   override def preStart(): Unit = {
-    super.preStart()
-
     configureDefaultStocks()
   }
 
+  override def postStop(): Unit = {
+    out.complete()
+  }
+
   def configureDefaultStocks(): Unit = {
-    import scala.collection.JavaConverters._
-    val defaultStocks = configuration.getStringList("default.stocks").get.asScala
+    val defaultStocks = configuration.get[Seq[String]]("default.stocks")
     log.info(s"Creating user actor with default stocks $defaultStocks")
 
     for (stockSymbol <- defaultStocks) {
@@ -33,12 +34,12 @@ class UserActor @Inject()(@Assisted out: ActorRef,
   override def receive: Receive = LoggingReceive {
     case StockUpdate(symbol, price) =>
       val stockUpdateMessage = Json.obj("type" -> "stockupdate", "symbol" -> symbol, "price" -> price.doubleValue())
-      out ! stockUpdateMessage
+      out.offer(stockUpdateMessage)
 
     case StockHistory(symbol, history) =>
       val numberSeq = history.map(h => Json.toJson[Double](h))
       val stockUpdateMessage = Json.obj("type" -> "stockhistory", "symbol" -> symbol, "history" -> numberSeq)
-      out ! stockUpdateMessage
+      out.offer(stockUpdateMessage)
 
     case json: JsValue =>
       // When the user types in a stock in the upper right corner, this is triggered
@@ -58,12 +59,12 @@ class UserParentActor @Inject()(childFactory: UserActor.Factory) extends Actor w
 }
 
 object UserParentActor {
-  case class Create(id: String, out: ActorRef)
+  case class Create(id: String, out: SourceQueueWithComplete[JsValue])
 }
 
 object UserActor {
   trait Factory {
     // Corresponds to the @Assisted parameters defined in the constructor
-    def apply(out: ActorRef): Actor
+    def apply(out: SourceQueueWithComplete[JsValue]): Actor
   }
 }

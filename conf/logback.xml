@@ -21,7 +21,7 @@
     <logger name="akka.actor" level="INFO"/>
 
     <logger name="actors.UserParentActor" level="INFO"/>
-    <logger name="actors.UserActor" level="INFO"/>
+    <logger name="actors.UserActor" level="DEBUG"/>
     <logger name="actors.StocksActor" level="INFO"/>
     <logger name="actors.StockActor" level="INFO"/>
 
