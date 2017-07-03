@@ -53,6 +53,71 @@ class StockActorSpec extends TestKitSpec {
       val userActorMessage = probe.receiveOne(500.millis)
       userActorMessage mustBe a [StockHistory]
     }
+    
+    "remove watcher on UnwatchStock message" in {
+      val probe = new TestProbe(system)
+
+      // Create a standard StockActor.
+      val stockActor = system.actorOf(Props(new StockActor(symbol)))
+      probe watch stockActor
+      
+      // create an actor which will test the UserActor
+      val userActor = system.actorOf(Props(new ProbeWrapper(probe)))
+
+      // First user watch stock
+      stockActor.tell(WatchStock(symbol), userActor)
+      val userActorMessage = probe.receiveOne(500.millis)
+      userActorMessage mustBe a [StockHistory]
+      val stockUpdateMessage = probe.receiveOne(500.millis)
+      stockUpdateMessage mustBe a [StockUpdate]
+
+      // create another actor which will test the UserActor
+      val userActor2 = system.actorOf(Props(new ProbeWrapper(probe)))
+
+      // Second user watch stock
+      stockActor.tell(WatchStock(symbol), userActor2)
+      val userActorMessage2 = probe.receiveOne(500.millis)
+      userActorMessage2 mustBe a [StockHistory]
+      val stockUpdateMessage2 = probe.receiveOne(500.millis)
+      stockUpdateMessage2 mustBe a [StockUpdate]
+
+      // Now unwatch stock - user 1
+      stockActor.tell(UnwatchStock(Some(symbol)), userActor)
+
+      // the stockActor is supposed to be still active since there are more watchers listening, so a new stock update will be triggered      
+      val stockUpdateMessageNew = probe.receiveOne(500.millis)
+      stockUpdateMessageNew mustBe a [StockUpdate]      
+    }    
+    
+    "remove watcher on UnwatchStock message if no more watchers left stop Actor" in {
+      val probe = new TestProbe(system)
+
+      // Create a standard StockActor.
+      val stockActor = system.actorOf(Props(new StockActor(symbol)))
+      probe watch stockActor
+      
+      // create an actor which will test the UserActor
+      val userActor = system.actorOf(Props(new ProbeWrapper(probe)))
+
+      // First watch stock
+      // Simulates sending the message as if it was sent from the userActor
+      stockActor.tell(WatchStock(symbol), userActor)
+
+      // the userActor will be added as a watcher and get a message with the stock history
+      val userActorMessage = probe.receiveOne(500.millis)
+      userActorMessage mustBe a [StockHistory]
+
+      // the userActor will receive a stock update
+      val stockUpdateMessage = probe.receiveOne(500.millis)
+      stockUpdateMessage mustBe a [StockUpdate]
+
+      // Now unwatch stock
+      stockActor.tell(UnwatchStock(Some(symbol)), userActor)
+
+      // the stockActor is supposed to be killed when no more listeners are present      
+      probe.expectTerminated(stockActor)     
+    }    
+    
   }
 
 }

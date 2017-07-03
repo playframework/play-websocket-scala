@@ -53,6 +53,30 @@ class UserActorSpec extends TestKitSpec with MustMatchers {
       jsObj \ "symbol" mustBe JsDefined(JsString("ABC"))
       jsObj \ "history" mustBe JsDefined(Json.arr(JsNumber(0.1), JsNumber(1.0)))
     }
+    
+    "send the watch stock when receiving a Json message" in {
+      val out = TestProbe()
+      val stocksActor = TestProbe()
+
+      val userActorRef = TestActorRef[UserActor](Props(new UserActor(out.ref, stocksActor.ref, configuration)))
+      val userActor = userActorRef.underlyingActor
+
+      // Watch Stock JSON received
+      val jsonString = """{"symbol": "ABC"}"""
+      val json = Json.parse(jsonString)      
+      userActor.receive(json)
+      val msgWatchStock = stocksActor.receiveOne(500.millis)
+      msgWatchStock mustBe a [WatchStock]
+      
+      // receive stock history when watching...
+      userActor.receive(StockHistory(symbol, history))
+      val jsObj: JsObject = out.receiveOne(500 millis).asInstanceOf[JsObject]
+
+      // ...and expect it to be a JSON node.
+      jsObj \ "type" mustBe JsDefined(JsString("stockhistory"))
+      jsObj \ "symbol" mustBe JsDefined(JsString(symbol))
+      jsObj \ "history" mustBe JsDefined(Json.arr(JsNumber(0.1), JsNumber(1.0)))
+    }    
   }
 
 }
