@@ -22,11 +22,12 @@ import scala.concurrent.{ExecutionContext, Future}
  * Creates a user actor that manages the websocket stream.
  *
  * @param stocksActor the actor responsible for stocks and their streams
- * @param ec implicit CPU bound execution context.
+ * @param ec          implicit CPU bound execution context.
  */
 class UserActor @Inject()(@Assisted id: String, @Named("stocksActor") stocksActor: ActorRef)
                          (implicit mat: Materializer, ec: ExecutionContext)
   extends Actor with ActorLogging {
+
   import akka.pattern.pipe
 
   implicit val timeout = Timeout(50.millis)
@@ -40,7 +41,7 @@ class UserActor @Inject()(@Assisted id: String, @Named("stocksActor") stocksActo
     .run()
 
   // https://github.com/akka/akka/blob/master/akka-stream/src/main/scala/akka/stream/KillSwitch.scala
-  private var stockKillSwitches: Map[Stock,UniqueKillSwitch] = Map.empty
+  private var stockKillSwitches: Map[Stock, UniqueKillSwitch] = Map.empty
 
   // Set this actor as the sink when JsValue is sent from the browser.
   private val actorSink: Sink[JsValue, _] = Sink.actorRefWithAck(self,
@@ -50,8 +51,9 @@ class UserActor @Inject()(@Assisted id: String, @Named("stocksActor") stocksActo
 
   override def receive: Receive = LoggingReceive {
     case WatchStocks(symbols) =>
-      val websocketFlowFuture = generateFlow(symbols)
-      pipe(websocketFlowFuture) to sender()
+      val websocketFlow = generateFlow()
+      retrieveStocks(symbols)
+      sender() ! websocketFlow
 
     case Success(msg) =>
       log.debug(s"Successful $msg")
@@ -60,18 +62,31 @@ class UserActor @Inject()(@Assisted id: String, @Named("stocksActor") stocksActo
       // When the user types in a stock in the upper right corner, this is triggered,
       // because this actor is a sink for the websocket flow.
       val symbol = (json \ "symbol").as[String]
-      log.info("Received symbol " + symbol)
-      //stocksActor ! WatchStocks(symbol)
-      sender() ! Success("ack") // must signal processing in Sink.actorRefWithAck
+      val future = retrieveStocks(Set(StockSymbol(symbol)))
+      // must signal processing in Sink.actorRefWithAck }
+      val thisSender = sender()
+      future.map(_ => thisSender ! Success("ack"))
   }
 
   /**
    * Generates a flow that can be used by the websocket.
    *
-   * @param symbols stock symbols.
    * @return the flow of JSON
    */
-  private def generateFlow(symbols: Set[StockSymbol]): Future[Flow[JsValue, JsValue, _]] = {
+  private def generateFlow(): Flow[JsValue, JsValue, NotUsed] = {
+    // Put the source and sink together to make a flow of hub source as output (aggregating all
+    // stocks as JSON to the browser) and the actor as the sink (receiving any JSON messages
+    // from the browse
+    val websocketFlow: Flow[JsValue, JsValue, NotUsed] = {
+      Flow.fromSinkAndSource(actorSink, hubSource)
+        .backpressureTimeout(3.seconds)
+    }
+    websocketFlow.log(s"websocket-$id", jsvalue => jsvalue.toString())
+  }
+
+  private def retrieveStocks(symbols: Set[StockSymbol]): Future[Unit]
+
+  = {
     import akka.pattern.ask
 
     // Ask the stocksActor for a stream containing these stocks.
@@ -82,49 +97,53 @@ class UserActor @Inject()(@Assisted id: String, @Named("stocksActor") stocksActo
     // set the actor itself up as the sink.
     future.map { (newStocks: Stocks) =>
       newStocks.stocks.foreach { stock =>
-        val historySource: Source[JsValue, NotUsed] = generateStockHistorySource(stock)
-          .named(s"history-${stock.symbol}-$id")
-          .log(s"history-${stock.symbol}-$id")
-        val updateSource: Source[JsValue, NotUsed] = generateStockUpdateSource(stock)
-          .named(s"update-${stock.symbol}-$id")
-          .log(s"update-${stock.symbol}-$id")
-        val stockSource: Source[JsValue, NotUsed] = historySource.concat(updateSource)
-
-        // Set up a flow that will let us pull out a killswitch for this specific stock.
-        val killswitchFlow: Flow[JsValue, JsValue, UniqueKillSwitch] = {
-          Flow.apply[JsValue].joinMat(KillSwitches.singleBidi[JsValue, JsValue])(Keep.right)
-        }
-
-        // Set up a complete runnable graph from the stock source to the hub's sink
-        val graph: RunnableGraph[UniqueKillSwitch] = {
-          stockSource
-            .viaMat(killswitchFlow)(Keep.right)
-            .to(hubSink)
-            .named(s"stock-${stock.symbol}-$id")
-        }
-
-        // Start it up!
-        val killSwitch = graph.run()
-
-        // Pull out the kill switch so we can stop it when we want to unwatch a stock.
-        stockKillSwitches += (stock -> killSwitch)
+        addStock(stock)
       }
-
-      // Put the source and sink together to make a flow of hub source as output (aggregating all
-      // stocks as JSON to the browser) and the actor as the sink (receiving any JSON messages
-      // from the browser)
-      val websocketFlow: Flow[JsValue, JsValue, NotUsed] = {
-        Flow.fromSinkAndSource(actorSink, hubSource)
-          .backpressureTimeout(3.seconds)
-      }
-      websocketFlow.log(s"websocket-$id", jsvalue => jsvalue.toString())
     }
+  }
+
+  /**
+   * Adds a single stock to the hub.
+   *
+   * @param stock
+   */
+  private def addStock(stock: Stock): Unit
+
+  = {
+    val historySource: Source[JsValue, NotUsed] = generateStockHistorySource(stock)
+      .named(s"history-${stock.symbol}-$id")
+      .log(s"history-${stock.symbol}-$id")
+    val updateSource: Source[JsValue, NotUsed] = generateStockUpdateSource(stock)
+      .named(s"update-${stock.symbol}-$id")
+      .log(s"update-${stock.symbol}-$id")
+    val stockSource: Source[JsValue, NotUsed] = historySource.concat(updateSource)
+
+    // Set up a flow that will let us pull out a killswitch for this specific stock.
+    val killswitchFlow: Flow[JsValue, JsValue, UniqueKillSwitch] = {
+      Flow.apply[JsValue].joinMat(KillSwitches.singleBidi[JsValue, JsValue])(Keep.right)
+    }
+
+    // Set up a complete runnable graph from the stock source to the hub's sink
+    val graph: RunnableGraph[UniqueKillSwitch] = {
+      stockSource
+        .viaMat(killswitchFlow)(Keep.right)
+        .to(hubSink)
+        .named(s"stock-${stock.symbol}-$id")
+    }
+
+    // Start it up!
+    val killSwitch = graph.run()
+
+    // Pull out the kill switch so we can stop it when we want to unwatch a stock.
+    stockKillSwitches += (stock -> killSwitch)
   }
 
   /**
    * Generates the stockhistory source by taking the first 50 elements of each source.
    */
-  private def generateStockHistorySource(stock: Stock): Source[JsValue, NotUsed] = {
+  private def generateStockHistorySource(stock: Stock): Source[JsValue, NotUsed]
+
+  = {
     val stockHistory = stock.source.take(50).runWith(Sink.seq).map { s =>
       Json.toJson(StockHistory(stock.symbol, s.map(_.price)))
     }
@@ -136,29 +155,33 @@ class UserActor @Inject()(@Assisted id: String, @Named("stocksActor") stocksActo
    *
    * @return a source containing the merged sources of all the stocks.
    */
-  private def generateStockUpdateSource(stock: Stock): Source[JsValue, NotUsed] = {
+  private def generateStockUpdateSource(stock: Stock): Source[JsValue, NotUsed]
+
+  = {
     // Throttle the updates so they only happen once per 75 millis
     stock.source
       .throttle(elements = 1, per = 75.millis, maximumBurst = 1, ThrottleMode.shaping)
       .map { stockQuote =>
-      Json.toJson(StockUpdate(stockQuote.symbol, stockQuote.price))
-    }
+        Json.toJson(StockUpdate(stockQuote.symbol, stockQuote.price))
+      }
   }
 
   // JSON presentation class for stock history
   case class StockHistory(symbol: StockSymbol, prices: Seq[StockPrice])
+
   object StockHistory {
-    implicit val stockHistoryWrites: Writes[StockHistory] = new Writes[StockHistory]{
+    implicit val stockHistoryWrites: Writes[StockHistory] = new Writes[StockHistory] {
       override def writes(history: StockHistory): JsValue = Json.obj(
-          "type" -> "stockhistory",
-          "symbol" -> history.symbol,
-          "history" -> history.prices
+        "type" -> "stockhistory",
+        "symbol" -> history.symbol,
+        "history" -> history.prices
       )
     }
   }
 
   // JSON presentation class for stock update
   case class StockUpdate(symbol: StockSymbol, price: StockPrice)
+
   object StockUpdate {
     // Used for automatic JSON conversion
     // https://www.playframework.com/documentation/2.6.x/ScalaJson
@@ -179,6 +202,7 @@ class UserParentActor @Inject()(childFactory: UserActor.Factory,
                                 configuration: Configuration)
                                (implicit ec: ExecutionContext)
   extends Actor with InjectedActorSupport with ActorLogging {
+
   import UserParentActor._
   import akka.pattern.{ask, pipe}
 
@@ -196,11 +220,15 @@ class UserParentActor @Inject()(childFactory: UserActor.Factory,
 }
 
 object UserParentActor {
+
   case class Create(id: String)
+
 }
 
 object UserActor {
+
   trait Factory {
     def apply(id: String): Actor
   }
+
 }
