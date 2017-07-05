@@ -5,7 +5,7 @@ import javax.inject._
 import akka.NotUsed
 import akka.actor.Status.Success
 import akka.actor._
-import akka.event.LoggingReceive
+import akka.event.{LogMarker, Logging, LoggingReceive, MarkerLoggingAdapter}
 import akka.stream.scaladsl._
 import akka.stream._
 import akka.util.Timeout
@@ -28,20 +28,16 @@ class UserActor @Inject()(@Assisted id: String, @Named("stocksActor") stocksActo
                          (implicit mat: Materializer, ec: ExecutionContext)
   extends Actor with ActorLogging {
 
-  import akka.pattern.pipe
+  private val marker = LogMarker(id)
+  override implicit val log: MarkerLoggingAdapter = akka.event.Logging.withMarker(context.system, this)
 
   implicit val timeout = Timeout(50.millis)
 
-  // https://markatta.com/codemonkey/blog/2016/10/02/chat-with-akka-http-websockets/
-  // http://doc.akka.io/docs/akka/current/scala/stream/stream-dynamic.html#dynamic-fan-in-and-fan-out-with-mergehub-and-broadcasthub
-  // https://github.com/akka/akka/blob/master/akka-docs/src/test/scala/docs/stream/HubsDocSpec.scala
-  // https://github.com/akka/akka/blob/master/akka-stream-tests/src/test/scala/akka/stream/scaladsl/HubSpec.scala
   val (hubSink, hubSource) = MergeHub.source[JsValue](perProducerBufferSize = 16)
     .toMat(BroadcastHub.sink(bufferSize = 256))(Keep.both)
     .run()
 
-  // https://github.com/akka/akka/blob/master/akka-stream/src/main/scala/akka/stream/KillSwitch.scala
-  private var stockKillSwitches: Map[Stock, UniqueKillSwitch] = Map.empty
+  private var stocksMap: Map[Stock, UniqueKillSwitch] = Map.empty
 
   // Set this actor as the sink when JsValue is sent from the browser.
   private val actorSink: Sink[JsValue, _] = Sink.actorRefWithAck(self,
@@ -49,23 +45,31 @@ class UserActor @Inject()(@Assisted id: String, @Named("stocksActor") stocksActo
     ackMessage = Success("ack"),
     onCompleteMessage = PoisonPill)
 
+  /**
+   * Receive block for this actor.  Note that this gets messages both from the
+   * system and from the websocket (in the form of JsValue).
+   */
   override def receive: Receive = LoggingReceive {
     case WatchStocks(symbols) =>
       val websocketFlow = generateFlow()
-      retrieveStocks(symbols)
+      addStocks(symbols)
       sender() ! websocketFlow
 
     case Success(msg) =>
-      log.debug(s"Successful $msg")
+      log.debug(marker, s"Successful $msg")
 
     case json: JsValue =>
       // When the user types in a stock in the upper right corner, this is triggered,
       // because this actor is a sink for the websocket flow.
-      val symbol = (json \ "symbol").as[String]
-      val future = retrieveStocks(Set(StockSymbol(symbol)))
+      val symbol = (json \ "symbol").as[StockSymbol]
+      log.info(marker, s"Got message $json")
+      val future = addStocks(Set(symbol))
       // must signal processing in Sink.actorRefWithAck }
       val thisSender = sender()
       future.map(_ => thisSender ! Success("ack"))
+
+    case other =>
+      log.error(marker, s"Unhandled message $other")
   }
 
   /**
@@ -79,14 +83,15 @@ class UserActor @Inject()(@Assisted id: String, @Named("stocksActor") stocksActo
     // from the browse
     val websocketFlow: Flow[JsValue, JsValue, NotUsed] = {
       Flow.fromSinkAndSource(actorSink, hubSource)
-        .backpressureTimeout(3.seconds)
     }
-    websocketFlow.log(s"websocket-$id", jsvalue => jsvalue.toString())
+    //websocketFlow.log(s"websocket-$id", jsvalue => jsvalue.toString())
+    websocketFlow
   }
 
-  private def retrieveStocks(symbols: Set[StockSymbol]): Future[Unit]
-
-  = {
+  /**
+   * Adds several stocks to the hub, by asking the stocks actor for stocks.
+   */
+  private def addStocks(symbols: Set[StockSymbol]): Future[Unit] = {
     import akka.pattern.ask
 
     // Ask the stocksActor for a stream containing these stocks.
@@ -97,25 +102,25 @@ class UserActor @Inject()(@Assisted id: String, @Named("stocksActor") stocksActo
     // set the actor itself up as the sink.
     future.map { (newStocks: Stocks) =>
       newStocks.stocks.foreach { stock =>
-        addStock(stock)
+        if (! stocksMap.contains(stock)) {
+          log.info(marker, s"Adding stock $stock")
+          addStock(stock)
+        }
       }
     }
   }
 
   /**
    * Adds a single stock to the hub.
-   *
-   * @param stock
    */
-  private def addStock(stock: Stock): Unit
-
-  = {
+  private def addStock(stock: Stock): Unit = {
+    // Make sure the history gets written out before the updates for this stock...
     val historySource: Source[JsValue, NotUsed] = generateStockHistorySource(stock)
       .named(s"history-${stock.symbol}-$id")
-      .log(s"history-${stock.symbol}-$id")
+      //.log(s"history-${stock.symbol}-$id")
     val updateSource: Source[JsValue, NotUsed] = generateStockUpdateSource(stock)
       .named(s"update-${stock.symbol}-$id")
-      .log(s"update-${stock.symbol}-$id")
+      //.log(s"update-${stock.symbol}-$id")
     val stockSource: Source[JsValue, NotUsed] = historySource.concat(updateSource)
 
     // Set up a flow that will let us pull out a killswitch for this specific stock.
@@ -135,15 +140,13 @@ class UserActor @Inject()(@Assisted id: String, @Named("stocksActor") stocksActo
     val killSwitch = graph.run()
 
     // Pull out the kill switch so we can stop it when we want to unwatch a stock.
-    stockKillSwitches += (stock -> killSwitch)
+    stocksMap += (stock -> killSwitch)
   }
 
   /**
    * Generates the stockhistory source by taking the first 50 elements of each source.
    */
-  private def generateStockHistorySource(stock: Stock): Source[JsValue, NotUsed]
-
-  = {
+  private def generateStockHistorySource(stock: Stock): Source[JsValue, NotUsed] = {
     val stockHistory = stock.source.take(50).runWith(Sink.seq).map { s =>
       Json.toJson(StockHistory(stock.symbol, s.map(_.price)))
     }
@@ -155,9 +158,7 @@ class UserActor @Inject()(@Assisted id: String, @Named("stocksActor") stocksActo
    *
    * @return a source containing the merged sources of all the stocks.
    */
-  private def generateStockUpdateSource(stock: Stock): Source[JsValue, NotUsed]
-
-  = {
+  private def generateStockUpdateSource(stock: Stock): Source[JsValue, NotUsed] = {
     // Throttle the updates so they only happen once per 75 millis
     stock.source
       .throttle(elements = 1, per = 75.millis, maximumBurst = 1, ThrottleMode.shaping)
@@ -212,8 +213,9 @@ class UserParentActor @Inject()(childFactory: UserActor.Factory,
 
   override def receive: Receive = LoggingReceive {
     case Create(id) =>
-      log.info(s"Creating user actor with default stocks $defaultStocks")
-      val child: ActorRef = injectedChild(childFactory(id), s"userActor-$id")
+      val name = s"userActor-$id"
+      log.info(s"Creating user actor $name with default stocks $defaultStocks")
+      val child: ActorRef = injectedChild(childFactory(id), name)
       val future = (child ? WatchStocks(defaultStocks.toSet)).mapTo[Flow[JsValue, JsValue, _]]
       pipe(future) to sender()
   }

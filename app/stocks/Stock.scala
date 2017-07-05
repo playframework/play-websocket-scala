@@ -1,5 +1,25 @@
 package stocks
+import akka.NotUsed
+import akka.stream.scaladsl.Source
 import play.api.libs.json._ // Combinator syntax
+
+
+/**
+ * A stock is a source of stock quotes and a symbol.
+ */
+class Stock(val symbol: StockSymbol) {
+  private val stockQuoteGenerator: StockQuoteGenerator = new FakeStockQuoteGenerator(symbol)
+
+  /** Creates a source that works like folding, based off the last quote with some jitter. */
+  val source: Source[StockQuote, NotUsed] = {
+    Source.unfold(stockQuoteGenerator.seed) { (last: StockQuote) =>
+      val next = stockQuoteGenerator.newQuote(last)
+      Some(next, next)
+    }
+  }
+
+  override val toString: String = s"Stock($symbol)"
+}
 
 trait StockQuoteGenerator {
   def seed: StockQuote
@@ -16,7 +36,6 @@ class FakeStockQuoteGenerator(symbol: StockSymbol) extends StockQuoteGenerator {
   def newQuote(lastQuote: StockQuote): StockQuote = {
     StockQuote(symbol, StockPrice(lastQuote.price.raw * (0.95 + (0.1 * random))))
   }
-
 }
 
 case class StockQuote(symbol: StockSymbol, price: StockPrice)
@@ -28,6 +47,10 @@ class StockSymbol private (val raw: String) extends AnyVal {
 
 object StockSymbol {
   def apply(raw: String) = new StockSymbol(raw)
+
+  implicit val stockSymbolReads: Reads[StockSymbol] = {
+    JsPath.read[String].map(StockSymbol(_))
+  }
 
   implicit val stockSymbolWrites: Writes[StockSymbol] = Writes {
     (symbol: StockSymbol) => JsString(symbol.raw)
