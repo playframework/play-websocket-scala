@@ -2,13 +2,12 @@ package actors
 
 import javax.inject._
 
-import akka.NotUsed
-import akka.actor.Status.Success
 import akka.actor._
-import akka.event.{LogMarker, Logging, LoggingReceive, MarkerLoggingAdapter}
-import akka.stream.scaladsl._
+import akka.event.{LogMarker, LoggingReceive, MarkerLoggingAdapter}
 import akka.stream._
+import akka.stream.scaladsl._
 import akka.util.Timeout
+import akka.{Done, NotUsed}
 import com.google.inject.assistedinject.Assisted
 import play.api.Configuration
 import play.api.libs.concurrent.InjectedActorSupport
@@ -19,7 +18,8 @@ import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
 
 /**
- * Creates a user actor that manages the websocket stream.
+ * Creates a user actor that manages the websocket stream.  Having an actor manage
+ * the stream helps with lifecycle and monitoring, 
  *
  * @param stocksActor the actor responsible for stocks and their streams
  * @param ec          implicit CPU bound execution context.
@@ -39,11 +39,11 @@ class UserActor @Inject()(@Assisted id: String, @Named("stocksActor") stocksActo
 
   private var stocksMap: Map[Stock, UniqueKillSwitch] = Map.empty
 
-  // Set this actor as the sink when JsValue is sent from the browser.
-  private val actorSink: Sink[JsValue, _] = Sink.actorRefWithAck(self,
-    onInitMessage = Success("init"),
-    ackMessage = Success("ack"),
-    onCompleteMessage = PoisonPill)
+  private val jsonSink: Sink[JsValue, Future[Done]] = Sink.foreach { json =>
+    // When the user types in a stock in the upper right corner, this is triggered,
+    val symbol = (json \ "symbol").as[StockSymbol]
+    addStocks(Set(symbol))
+  }
 
   /**
    * Receive block for this actor.  Note that this gets messages both from the
@@ -54,22 +54,6 @@ class UserActor @Inject()(@Assisted id: String, @Named("stocksActor") stocksActo
       val websocketFlow = generateFlow()
       addStocks(symbols)
       sender() ! websocketFlow
-
-    case Success(msg) =>
-      log.debug(marker, s"Successful $msg")
-
-    case json: JsValue =>
-      // When the user types in a stock in the upper right corner, this is triggered,
-      // because this actor is a sink for the websocket flow.
-      val symbol = (json \ "symbol").as[StockSymbol]
-      log.info(marker, s"Got message $json")
-      val future = addStocks(Set(symbol))
-      // must signal processing in Sink.actorRefWithAck }
-      val thisSender = sender()
-      future.map(_ => thisSender ! Success("ack"))
-
-    case other =>
-      log.error(marker, s"Unhandled message $other")
   }
 
   /**
@@ -81,11 +65,7 @@ class UserActor @Inject()(@Assisted id: String, @Named("stocksActor") stocksActo
     // Put the source and sink together to make a flow of hub source as output (aggregating all
     // stocks as JSON to the browser) and the actor as the sink (receiving any JSON messages
     // from the browse
-    val websocketFlow: Flow[JsValue, JsValue, NotUsed] = {
-      Flow.fromSinkAndSource(actorSink, hubSource)
-    }
-    //websocketFlow.log(s"websocket-$id", jsvalue => jsvalue.toString())
-    websocketFlow
+    Flow.fromSinkAndSource(jsonSink, hubSource)
   }
 
   /**
@@ -167,6 +147,9 @@ class UserActor @Inject()(@Assisted id: String, @Named("stocksActor") stocksActo
       }
   }
 
+  // Used for automatic JSON conversion
+  // https://www.playframework.com/documentation/2.6.x/ScalaJson
+
   // JSON presentation class for stock history
   case class StockHistory(symbol: StockSymbol, prices: Seq[StockPrice])
 
@@ -184,8 +167,6 @@ class UserActor @Inject()(@Assisted id: String, @Named("stocksActor") stocksActo
   case class StockUpdate(symbol: StockSymbol, price: StockPrice)
 
   object StockUpdate {
-    // Used for automatic JSON conversion
-    // https://www.playframework.com/documentation/2.6.x/ScalaJson
     implicit val stockUpdateWrites: Writes[StockUpdate] = new Writes[StockUpdate] {
       override def writes(update: StockUpdate): JsValue = Json.obj(
         "type" -> "stockupdate",
@@ -222,15 +203,11 @@ class UserParentActor @Inject()(childFactory: UserActor.Factory,
 }
 
 object UserParentActor {
-
   case class Create(id: String)
-
 }
 
 object UserActor {
-
   trait Factory {
     def apply(id: String): Actor
   }
-
 }

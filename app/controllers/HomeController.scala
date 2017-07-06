@@ -96,6 +96,8 @@ trait SameOriginCheck {
 
   /**
    * Returns true if the value of the Origin header contains an acceptable value.
+   *
+   * This is probably better done through configuration same as the allowedhosts filter.
    */
   def originMatches(origin: String): Boolean = {
     origin.contains("localhost:9000") || origin.contains("localhost:19001")
