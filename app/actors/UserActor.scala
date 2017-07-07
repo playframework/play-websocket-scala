@@ -146,7 +146,35 @@ class UserActor @Inject()(@Assisted id: String, @Named("stocksActor") stocksActo
         Json.toJson(StockUpdate(stockQuote.symbol, stockQuote.price))
       }
   }
+  
+  // Used for automatic JSON conversion
+  // https://www.playframework.com/documentation/2.6.x/ScalaJson
 
+  // JSON presentation class for stock history
+  case class StockHistory(symbol: StockSymbol, prices: Seq[StockPrice])
+
+  object StockHistory {
+    implicit val stockHistoryWrites: Writes[StockHistory] = new Writes[StockHistory] {
+      override def writes(history: StockHistory): JsValue = Json.obj(
+        "type" -> "stockhistory",
+        "symbol" -> history.symbol,
+        "history" -> history.prices
+      )
+    }
+  }
+
+  // JSON presentation class for stock update
+  case class StockUpdate(symbol: StockSymbol, price: StockPrice)
+
+  object StockUpdate {
+    implicit val stockUpdateWrites: Writes[StockUpdate] = new Writes[StockUpdate] {
+      override def writes(update: StockUpdate): JsValue = Json.obj(
+        "type" -> "stockupdate",
+        "symbol" -> update.symbol,
+        "price" -> update.price
+      )
+    }
+  }
 }
 
 /**
