@@ -146,7 +146,7 @@ class UserActor @Inject()(@Assisted id: String, @Named("stocksActor") stocksActo
         Json.toJson(StockUpdate(stockQuote.symbol, stockQuote.price))
       }
   }
-  
+
   // Used for automatic JSON conversion
   // https://www.playframework.com/documentation/2.6.x/ScalaJson
 
