@@ -31,6 +31,8 @@ The message is parsed and depending on whether the message contains the stock hi
 
 ## Reactive Requests
 
+When a web server gets a request, it allocates a thread to handle the request and produce a response.  In a typical model the thread is allocated for the entire duration of the request and response, even if the web request is waiting for some other resource.  A Reactive Request is a typical web request and response, but handled in an asynchronous and non-blocking way on the server.  This means that when the thread for a web request is not actively being used, it can be released and reused for something else.
+
 The route is defined in the <a href="#code/conf/routes" class="shortcut">routes</a> file:
 
 <pre><code>GET /sentiment/:symbol controllers.StockSentiment.get(symbol)</code></pre>
