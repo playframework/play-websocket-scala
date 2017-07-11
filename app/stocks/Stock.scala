@@ -1,8 +1,11 @@
 package stocks
 
+import javax.money.{Monetary, MonetaryAmount}
+
 import akka.NotUsed
 import akka.stream.ThrottleMode
 import akka.stream.scaladsl.Source
+import org.javamoney.moneta.Money
 
 import scala.concurrent.duration._
 
@@ -44,14 +47,19 @@ trait StockQuoteGenerator {
 }
 
 class FakeStockQuoteGenerator(symbol: StockSymbol) extends StockQuoteGenerator {
-  private def random: Double = scala.util.Random.nextDouble
+  private val usd = Monetary.getCurrency("USD")
+
+  private def random = scala.util.Random.nextDouble()
+
+  private def amount(d: Double): MonetaryAmount = Money.of(d, usd)
 
   def seed: StockQuote = {
-    StockQuote(symbol, StockPrice(random * 800))
+    StockQuote(symbol, StockPrice(amount(random * 800)))
   }
 
   def newQuote(lastQuote: StockQuote): StockQuote = {
-    StockQuote(symbol, StockPrice(lastQuote.price.raw * (0.95 + (0.1 * random))))
+    val jitter = lastQuote.price.raw.getNumber.doubleValueExact() * (0.95 + (0.1 * random))
+    StockQuote(symbol, StockPrice(amount(jitter)))
   }
 }
 
@@ -77,17 +85,19 @@ object StockSymbol {
 }
 
 /** Value class for stock price */
-class StockPrice private (val raw: Double) extends AnyVal {
+class StockPrice private (val raw: javax.money.MonetaryAmount) extends AnyVal {
   override def toString: String = raw.toString
 }
 
 object StockPrice {
   import play.api.libs.json._ // Combinator syntax
 
-  def apply(raw: Double):StockPrice = new StockPrice(raw)
+  def apply(raw: javax.money.MonetaryAmount):StockPrice = {
+    new StockPrice(raw)
+  }
 
   implicit val stockPriceWrites: Writes[StockPrice] = Writes {
-    (price: StockPrice) => JsNumber(price.raw)
+    (price: StockPrice) => JsNumber(price.raw.getNumber.doubleValueExact())
   }
 }
 
