@@ -8,8 +8,6 @@ val akkaVersion = "2.5.18"
 
 scalaVersion := "2.12.7"
 
-crossScalaVersions := Seq("2.11.12", "2.12.7")
-
 libraryDependencies += guice
 libraryDependencies += ws
 
